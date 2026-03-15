@@ -40,12 +40,6 @@ jobs:
         run: |
           Compress-Archive -Path dist/OpenClawInstaller.exe -DestinationPath OpenClawInstaller-windows-x64.zip -Force
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenClawInstaller-windows-x64
-          path: OpenClawInstaller-windows-x64.zip
-
       - name: Create GitHub Release and upload asset
         uses: softprops/action-gh-release@v2
         with:
