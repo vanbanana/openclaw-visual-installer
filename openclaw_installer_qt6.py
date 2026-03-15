@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QPoint, Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
-    QFileDialog,
-    QFormLayout,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QProgressBar,
     QPlainTextEdit,
+    QProgressBar,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -27,52 +29,27 @@ from openclaw_installer_core import (
     DEFAULT_SAFE_BASE,
     apply_config_values,
     get_bin_hint,
+    get_openclaw_executable,
     install_openclaw,
     resolve_safe_dir,
 )
 
 
-class InstallWorker(QThread):
+class Worker(QThread):
     log = Signal(str)
     progress = Signal(int)
     done = Signal(bool, str)
 
-    def __init__(self, safe_dir: str):
+    def __init__(self, fn, *args, **kwargs):
         super().__init__()
-        self.safe_dir = safe_dir
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
 
-    def run(self) -> None:
+    def run(self):
         try:
-            safe = resolve_safe_dir(self.safe_dir)
-            self.log.emit(f"安全目录: {safe}")
-            self.progress.emit(25)
-            result = install_openclaw(safe)
-            self.log.emit(f"命令: {' '.join(result.command)}")
-            self.log.emit(result.message)
-            self.log.emit(f"PATH 提示: {get_bin_hint(safe)}")
-            self.progress.emit(70 if result.ok else 0)
-            self.done.emit(result.ok, result.message)
-        except Exception as e:  # noqa: BLE001
-            self.done.emit(False, str(e))
-
-
-class ConfigWorker(QThread):
-    log = Signal(str)
-    progress = Signal(int)
-    done = Signal(bool, str)
-
-    def __init__(self, safe_dir: str, values: dict[str, str]):
-        super().__init__()
-        self.safe_dir = safe_dir
-        self.values = values
-
-    def run(self) -> None:
-        try:
-            safe = resolve_safe_dir(self.safe_dir)
-            result = apply_config_values(safe, self.values)
-            self.log.emit(result.message)
-            self.progress.emit(100 if result.ok else 70)
-            self.done.emit(result.ok, result.message)
+            ok, msg = self.fn(*self.args, **self.kwargs)
+            self.done.emit(ok, msg)
         except Exception as e:  # noqa: BLE001
             self.done.emit(False, str(e))
 
@@ -80,178 +57,330 @@ class ConfigWorker(QThread):
 class InstallerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OpenClaw Installer Pro (Qt6)")
-        self.resize(980, 700)
+        self._drag_pos = QPoint()
+        self.current_safe_dir = DEFAULT_SAFE_BASE
+
+        self.setWindowTitle("OpenClaw Installer Pro")
+        self.setMinimumSize(1080, 760)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+
         self._build_ui()
         self._apply_style()
 
-    def _build_ui(self) -> None:
-        root = QWidget()
-        self.setCentralWidget(root)
-        main = QVBoxLayout(root)
-        main.setContentsMargins(20, 20, 20, 20)
-        main.setSpacing(14)
+    # -------------------- UI --------------------
+    def _build_ui(self):
+        wrap = QWidget()
+        root = QVBoxLayout(wrap)
+        root.setContentsMargins(16, 16, 16, 16)
 
-        title = QLabel("OpenClaw 现代化一键安装器")
-        title.setObjectName("title")
-        subtitle = QLabel("Qt6 UI · 安装与配置全图形化 · 安全目录隔离")
-        subtitle.setObjectName("subtitle")
+        glass = QFrame()
+        glass.setObjectName("glass")
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(45)
+        shadow.setOffset(0, 8)
+        shadow.setColor(Qt.black)
+        glass.setGraphicsEffect(shadow)
+
+        g_layout = QVBoxLayout(glass)
+        g_layout.setContentsMargins(14, 14, 14, 14)
+        g_layout.setSpacing(10)
+
+        # custom title bar
+        title = QFrame()
+        title.setObjectName("titlebar")
+        t = QHBoxLayout(title)
+        t.setContentsMargins(12, 8, 12, 8)
+        self.title_label = QLabel("OpenClaw 安装向导 · Qt6")
+        self.title_label.setObjectName("title")
+        t.addWidget(self.title_label)
+        t.addStretch(1)
+        btn_min = QPushButton("—")
+        btn_min.clicked.connect(self.showMinimized)
+        btn_close = QPushButton("✕")
+        btn_close.clicked.connect(self.close)
+        for b in (btn_min, btn_close):
+            b.setFixedSize(34, 28)
+            b.setObjectName("titlebtn")
+            t.addWidget(b)
+        g_layout.addWidget(title)
+
+        # step indicator
+        self.step_label = QLabel("Step 1/5 · 环境检测")
+        self.step_label.setObjectName("step")
+        g_layout.addWidget(self.step_label)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
-        self.progress.setValue(0)
+        self.progress.setValue(10)
+        g_layout.addWidget(self.progress)
 
-        main.addWidget(title)
-        main.addWidget(subtitle)
-        main.addWidget(self.progress)
+        body = QHBoxLayout()
 
-        card = QFrame()
-        card.setObjectName("card")
-        card_layout = QVBoxLayout(card)
+        # left guide panel
+        guide = QFrame()
+        guide.setObjectName("guide")
+        gl = QVBoxLayout(guide)
+        gl.addWidget(QLabel("安装总流程"))
+        self.guide_text = QLabel(
+            "1) 检测 Node/npm/网络\n"
+            "2) 选择安装目录与安全策略\n"
+            "3) 执行安装\n"
+            "4) 可视化填写配置\n"
+            "5) 启动前检查与版本校验"
+        )
+        self.guide_text.setWordWrap(True)
+        gl.addWidget(self.guide_text)
+        gl.addStretch(1)
 
-        form = QFormLayout()
-        self.safe_dir = QLineEdit(str(DEFAULT_SAFE_BASE))
-        dir_row = QHBoxLayout()
-        dir_row.addWidget(self.safe_dir)
-        browse = QPushButton("浏览")
-        browse.clicked.connect(self.pick_dir)
-        dir_row.addWidget(browse)
-        dir_wrap = QWidget()
-        dir_wrap.setLayout(dir_row)
-        form.addRow("安全目录", dir_wrap)
+        body.addWidget(guide, 2)
 
-        self.timezone = QLineEdit("Asia/Shanghai")
-        self.group_policy = QLineEdit("allowlist")
-        self.show_ok = QLineEdit("false")
-        self.indicator = QLineEdit("true")
+        # right wizard
+        right = QFrame()
+        right.setObjectName("card")
+        rl = QVBoxLayout(right)
 
-        form.addRow("消息时区", self.timezone)
-        form.addRow("群聊策略", self.group_policy)
-        form.addRow("显示心跳OK", self.show_ok)
-        form.addRow("心跳指示器", self.indicator)
-
-        card_layout.addLayout(form)
-
-        btn_row = QHBoxLayout()
-        self.btn_install = QPushButton("① 安装 OpenClaw")
-        self.btn_install.clicked.connect(self.start_install)
-        self.btn_config = QPushButton("② 写入配置")
-        self.btn_config.clicked.connect(self.start_config)
-        self.btn_copy = QPushButton("复制 PATH")
-        self.btn_copy.clicked.connect(self.copy_path)
-        btn_row.addWidget(self.btn_install)
-        btn_row.addWidget(self.btn_config)
-        btn_row.addWidget(self.btn_copy)
-        card_layout.addLayout(btn_row)
-
-        main.addWidget(card)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._page_check())
+        self.stack.addWidget(self._page_dir())
+        self.stack.addWidget(self._page_install())
+        self.stack.addWidget(self._page_config())
+        self.stack.addWidget(self._page_finish())
+        rl.addWidget(self.stack)
 
         self.logs = QPlainTextEdit()
         self.logs.setReadOnly(True)
-        self.logs.setPlaceholderText("安装/配置日志会显示在这里…")
-        main.addWidget(self.logs, stretch=1)
+        self.logs.setPlaceholderText("实时日志…")
+        rl.addWidget(self.logs, 1)
 
-        self.status = QLabel("待命：先点安装，再点写入配置")
-        self.status.setObjectName("status")
-        main.addWidget(self.status)
+        nav = QHBoxLayout()
+        self.btn_prev = QPushButton("上一步")
+        self.btn_prev.clicked.connect(self.prev_step)
+        self.btn_next = QPushButton("下一步")
+        self.btn_next.clicked.connect(self.next_step)
+        nav.addStretch(1)
+        nav.addWidget(self.btn_prev)
+        nav.addWidget(self.btn_next)
+        rl.addLayout(nav)
 
-    def _apply_style(self) -> None:
+        body.addWidget(right, 5)
+        g_layout.addLayout(body)
+
+        root.addWidget(glass)
+        self.setCentralWidget(wrap)
+        self._sync_nav()
+
+    def _page_check(self):
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("环境检测（全自动）"))
+        self.check_result = QLabel("点击“下一步”开始检测")
+        self.check_result.setWordWrap(True)
+        l.addWidget(self.check_result)
+        return w
+
+    def _page_dir(self):
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("安装目录与安全策略"))
+        self.safe_dir = QLineEdit(str(DEFAULT_SAFE_BASE))
+        l.addWidget(self.safe_dir)
+        self.dir_hint = QLabel("将安装到隔离目录，不污染系统全局。")
+        l.addWidget(self.dir_hint)
+        return w
+
+    def _page_install(self):
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("执行安装"))
+        self.install_state = QLabel("点击“下一步”开始安装")
+        l.addWidget(self.install_state)
+        return w
+
+    def _page_config(self):
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("可视化配置（无需命令行）"))
+        self.f_timezone = QLineEdit("Asia/Shanghai")
+        self.f_group = QLineEdit("allowlist")
+        self.f_ok = QLineEdit("false")
+        self.f_indicator = QLineEdit("true")
+        for label, field in [
+            ("消息时区", self.f_timezone),
+            ("群聊策略", self.f_group),
+            ("显示心跳OK", self.f_ok),
+            ("心跳指示器", self.f_indicator),
+        ]:
+            l.addWidget(QLabel(label))
+            l.addWidget(field)
+        self.config_state = QLabel("点击“下一步”写入配置")
+        l.addWidget(self.config_state)
+        return w
+
+    def _page_finish(self):
+        w = QWidget()
+        l = QVBoxLayout(w)
+        l.addWidget(QLabel("完成与首次启动指导"))
+        self.finish_text = QLabel("安装完成后，这里会显示版本、PATH、启动建议。")
+        self.finish_text.setWordWrap(True)
+        l.addWidget(self.finish_text)
+        return w
+
+    def _apply_style(self):
         QApplication.instance().setFont(QFont("Segoe UI", 10))
         self.setStyleSheet(
             """
-            QMainWindow { background: #0f172a; color: #e2e8f0; }
-            QLabel#title { font-size: 28px; font-weight: 700; color: #f8fafc; }
-            QLabel#subtitle { color: #94a3b8; }
-            QLabel#status { color: #93c5fd; font-weight: 600; }
-            QFrame#card { background: #111827; border: 1px solid #1f2937; border-radius: 14px; }
+            QFrame#glass { background: rgba(15, 23, 42, 0.82); border: 1px solid rgba(148,163,184,0.35); border-radius: 18px; }
+            QFrame#titlebar { background: rgba(30, 41, 59, 0.75); border-radius: 12px; }
+            QLabel#title { font-size: 20px; font-weight: 700; color: #f8fafc; }
+            QLabel#step { color: #93c5fd; font-size: 13px; font-weight: 600; }
+            QFrame#guide, QFrame#card { background: rgba(17, 24, 39, 0.80); border: 1px solid #1f2937; border-radius: 14px; }
+            QLabel { color: #e2e8f0; }
             QLineEdit, QPlainTextEdit {
-                background: #020617;
-                border: 1px solid #1e293b;
-                border-radius: 8px;
-                color: #e2e8f0;
-                padding: 8px;
+              background: rgba(2, 6, 23, 0.9); color: #e2e8f0; border: 1px solid #334155; border-radius: 10px; padding: 8px;
             }
-            QPushButton {
-                background: #2563eb;
-                border: none;
-                border-radius: 10px;
-                color: white;
-                padding: 9px 14px;
-                font-weight: 600;
-            }
+            QPushButton { background: #2563eb; color: white; border-radius: 10px; padding: 9px 14px; font-weight: 600; border: none; }
             QPushButton:hover { background: #1d4ed8; }
-            QPushButton:disabled { background: #334155; color: #94a3b8; }
-            QProgressBar {
-                border: 1px solid #1e293b;
-                border-radius: 8px;
-                background: #020617;
-                text-align: center;
-                height: 22px;
-            }
-            QProgressBar::chunk { background-color: #22c55e; border-radius: 6px; }
+            QPushButton#titlebtn { background: rgba(30,41,59,0.9); }
+            QProgressBar { border: 1px solid #334155; border-radius: 8px; background: #020617; text-align: center; }
+            QProgressBar::chunk { background: #22c55e; border-radius: 7px; }
             """
         )
 
-    def log(self, text: str) -> None:
+    # -------------------- flow --------------------
+    def log(self, text: str):
         self.logs.appendPlainText(text)
 
-    def pick_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "选择安全目录", self.safe_dir.text())
-        if path:
-            self.safe_dir.setText(path)
+    def prev_step(self):
+        i = self.stack.currentIndex()
+        if i > 0:
+            self.stack.setCurrentIndex(i - 1)
+            self._sync_nav()
 
-    def copy_path(self) -> None:
+    def next_step(self):
+        i = self.stack.currentIndex()
+        if i == 0:
+            self.run_check()
+        elif i == 1:
+            self.run_dir_validate()
+        elif i == 2:
+            self.run_install()
+        elif i == 3:
+            self.run_config()
+        elif i == 4:
+            QMessageBox.information(self, "完成", "已完成全部步骤。")
+
+    def _sync_nav(self):
+        i = self.stack.currentIndex()
+        self.btn_prev.setEnabled(i > 0)
+        self.btn_next.setText("完成" if i == 4 else "下一步")
+        self.step_label.setText(["Step 1/5 · 环境检测", "Step 2/5 · 安全目录", "Step 3/5 · 安装", "Step 4/5 · 配置", "Step 5/5 · 启动指导"][i])
+        self.progress.setValue([10, 25, 45, 70, 100][i])
+
+    def run_check(self):
+        node = shutil.which("node")
+        npm = shutil.which("npm")
+        ok = bool(node and npm)
+        node_v = self._run_cmd([node, "-v"]) if node else "未找到"
+        npm_v = self._run_cmd([npm, "-v"]) if npm else "未找到"
+        latest = self._run_cmd([npm, "view", "openclaw", "version"]) if npm else "未知"
+        self.check_result.setText(f"node: {node_v}\nnpm: {npm_v}\nopenclaw latest: {latest}")
+        self.log(self.check_result.text())
+        if not ok:
+            QMessageBox.warning(self, "环境不足", "请先安装 Node.js 与 npm")
+            return
+        self.stack.setCurrentIndex(1)
+        self._sync_nav()
+
+    def run_dir_validate(self):
         try:
-            hint = get_bin_hint(resolve_safe_dir(self.safe_dir.text()))
-            QApplication.clipboard().setText(hint)
-            self.status.setText("已复制 PATH 目录")
+            p = resolve_safe_dir(self.safe_dir.text())
+            self.current_safe_dir = p
+            self.dir_hint.setText(f"目录有效：{p}")
+            self.log(f"safe dir ok: {p}")
+            self.stack.setCurrentIndex(2)
+            self._sync_nav()
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "路径错误", str(e))
+            QMessageBox.critical(self, "目录错误", str(e))
 
-    def start_install(self) -> None:
-        self.btn_install.setEnabled(False)
-        self.status.setText("安装中…")
-        self.worker = InstallWorker(self.safe_dir.text())
-        self.worker.log.connect(self.log)
-        self.worker.progress.connect(self.progress.setValue)
-        self.worker.done.connect(self.finish_install)
+    def run_install(self):
+        self.btn_next.setEnabled(False)
+
+        def fn():
+            res = install_openclaw(self.current_safe_dir)
+            self.log(f"install cmd: {' '.join(res.command)}")
+            self.log(res.message)
+            return res.ok, res.message
+
+        self.worker = Worker(fn)
+        self.worker.done.connect(self._done_install)
         self.worker.start()
 
-    def finish_install(self, ok: bool, msg: str) -> None:
-        self.btn_install.setEnabled(True)
+    def _done_install(self, ok: bool, msg: str):
+        self.btn_next.setEnabled(True)
+        self.install_state.setText(msg)
         if ok:
-            self.status.setText("安装完成，可继续写入配置")
-            QMessageBox.information(self, "完成", "安装成功")
+            self.stack.setCurrentIndex(3)
+            self._sync_nav()
         else:
-            self.status.setText("安装失败")
-            QMessageBox.critical(self, "失败", msg)
+            QMessageBox.critical(self, "安装失败", msg)
 
-    def start_config(self) -> None:
-        self.btn_config.setEnabled(False)
-        self.status.setText("配置写入中…")
-        values = {
-            "agents.defaults.envelopeTimezone": self.timezone.text(),
-            "channels.defaults.groupPolicy": self.group_policy.text(),
-            "channels.defaults.heartbeat.showOk": self.show_ok.text(),
-            "channels.defaults.heartbeat.useIndicator": self.indicator.text(),
-        }
-        self.cfg_worker = ConfigWorker(self.safe_dir.text(), values)
-        self.cfg_worker.log.connect(self.log)
-        self.cfg_worker.progress.connect(self.progress.setValue)
-        self.cfg_worker.done.connect(self.finish_config)
-        self.cfg_worker.start()
+    def run_config(self):
+        self.btn_next.setEnabled(False)
 
-    def finish_config(self, ok: bool, msg: str) -> None:
-        self.btn_config.setEnabled(True)
+        def fn():
+            values = {
+                "agents.defaults.envelopeTimezone": self.f_timezone.text(),
+                "channels.defaults.groupPolicy": self.f_group.text(),
+                "channels.defaults.heartbeat.showOk": self.f_ok.text(),
+                "channels.defaults.heartbeat.useIndicator": self.f_indicator.text(),
+            }
+            res = apply_config_values(self.current_safe_dir, values)
+            self.log(res.message)
+            return res.ok, res.message
+
+        self.worker = Worker(fn)
+        self.worker.done.connect(self._done_config)
+        self.worker.start()
+
+    def _done_config(self, ok: bool, msg: str):
+        self.btn_next.setEnabled(True)
+        self.config_state.setText(msg)
         if ok:
-            self.status.setText("全部完成 ✅")
-            QMessageBox.information(self, "完成", "配置写入成功")
+            exe = get_openclaw_executable(self.current_safe_dir)
+            local_ver = self._run_cmd([str(exe), "--version"]) if exe.exists() else "未检测到"
+            npm = shutil.which("npm")
+            latest = self._run_cmd([npm, "view", "openclaw", "version"]) if npm else "未知"
+            self.finish_text.setText(
+                f"本地安装版本: {local_ver}\n仓库最新版本: {latest}\n"
+                f"PATH: {get_bin_hint(self.current_safe_dir)}\n"
+                f"下一步：将 PATH 加入系统后，打开 OpenClaw 并完成首次对话向导。"
+            )
+            self.stack.setCurrentIndex(4)
+            self._sync_nav()
         else:
-            self.status.setText("配置失败")
-            QMessageBox.critical(self, "失败", msg)
+            QMessageBox.critical(self, "配置失败", msg)
+
+    @staticmethod
+    def _run_cmd(cmd):
+        try:
+            return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT, timeout=20).strip()
+        except Exception as e:  # noqa: BLE001
+            return f"命令失败: {e}"
+
+    # -------------------- frameless drag --------------------
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and not self.isMaximized():
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
 
 
-def main() -> None:
+def main():
     app = QApplication(sys.argv)
     w = InstallerWindow()
     w.show()
