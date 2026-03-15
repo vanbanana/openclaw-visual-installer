@@ -1,0 +1,58 @@
+name: Build Windows EXE and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Build EXE (PyInstaller onefile, windowed)
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onefile --name OpenClawInstaller openclaw_installer_gui.py
+
+      - name: Pack release asset
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/OpenClawInstaller.exe -DestinationPath OpenClawInstaller-windows-x64.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClawInstaller-windows-x64
+          path: OpenClawInstaller-windows-x64.zip
+
+      - name: Create GitHub Release and upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: OpenClaw Visual Installer ${{ github.event.inputs.tag }}
+          body: |
+            Windows EXE release built by GitHub Actions.
+            Asset: OpenClawInstaller-windows-x64.zip (contains OpenClawInstaller.exe)
+          files: OpenClawInstaller-windows-x64.zip
+          make_latest: true

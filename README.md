@@ -16,6 +16,12 @@
 python3 openclaw_installer_gui.py
 ```
 
+## Windows 发行版（EXE）
+- 仓库已内置 GitHub Actions：`Build Windows EXE and Release`
+- 可在 Actions 中手动触发，输入 tag（如 `v1.0.0`）后自动生成并发布：
+  - `OpenClawInstaller-windows-x64.zip`
+  - 内含 `OpenClawInstaller.exe`
+
 ## 测试（已通过）
 ```bash
 python3 -m pytest -q tests/test_openclaw_installer_gui.py
