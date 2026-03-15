@@ -3,10 +3,12 @@
 现代化 Qt6 可视化安装器，用于把 OpenClaw 安装到“安全目录”，并在 GUI 中完成后续配置，不需要命令行交互。
 
 ## 特性
-- Qt6 现代化桌面界面（深色主题、卡片布局、进度条、日志区）
+- Qt6 现代化桌面界面（自定义无边框标题栏 + 毛玻璃风格 + 圆角阴影）
 - Windows / Linux 双平台
 - 默认安全目录：`~/openclaw-safe`
 - 安装命令使用 `npm --prefix <safeDir>/npm-prefix`
+- 8 步可视化向导：环境检测 → 安全目录 → 安装 → 配置 → 启动检测 → 首聊前清单
+- 每一步都带详细帮助文案与日志反馈
 - 配置项全部在 GUI 中填写并写入
 - 配置隔离：写入 `<safeDir>/state/openclaw.json`，不污染系统全局 OpenClaw
 - 支持测试模式：`OPENCLAW_INSTALLER_TEST_MODE=1`
