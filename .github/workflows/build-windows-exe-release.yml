@@ -33,7 +33,7 @@ jobs:
       - name: Build EXE (PyInstaller onefile, windowed)
         shell: powershell
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --name OpenClawInstaller openclaw_installer_gui.py
+          pyinstaller --noconfirm --clean --windowed --onefile --name OpenClawInstaller openclaw_installer_qt6.py
 
       - name: Pack release asset
         shell: powershell
