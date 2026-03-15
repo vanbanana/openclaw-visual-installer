@@ -25,18 +25,18 @@ jobs:
           python-version: '3.11'
 
       - name: Install build dependencies
-        shell: pwsh
+        shell: powershell
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-build.txt
 
       - name: Build EXE (PyInstaller onefile, windowed)
-        shell: pwsh
+        shell: powershell
         run: |
           pyinstaller --noconfirm --clean --windowed --onefile --name OpenClawInstaller openclaw_installer_gui.py
 
       - name: Pack release asset
-        shell: pwsh
+        shell: powershell
         run: |
           Compress-Archive -Path dist/OpenClawInstaller.exe -DestinationPath OpenClawInstaller-windows-x64.zip -Force
 
