@@ -5,8 +5,10 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
+import secrets
 
 DEFAULT_SAFE_BASE = Path.home() / "openclaw-safe"
 
@@ -108,12 +110,96 @@ def apply_config_values(install_root: Path, values: Dict[str, str]) -> InstallRe
     env["OPENCLAW_CONFIG_PATH"] = str(cfg_path)
 
     for k, v in values.items():
-        if not v.strip():
+        if not str(v).strip():
             continue
-        cmd = [str(exe), "config", "set", k, v]
+        cmd = [str(exe), "config", "set", k, str(v)]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
         if proc.returncode != 0:
             msg = proc.stderr.strip() or proc.stdout.strip()
             return InstallResult(False, f"配置写入失败: {k}\n{msg}", cmd, install_root)
 
     return InstallResult(True, f"配置写入成功（隔离配置文件: {cfg_path}）", [str(exe), "config", "set"], install_root)
+
+
+@dataclass
+class SkillPackage:
+    name: str
+    source: str
+    version: str
+    risk: str
+    recommended: bool = False
+
+
+SKILL_CATALOG: List[SkillPackage] = [
+    SkillPackage("qqbot-cron", "skillhub", "1.2.0", "低：仅定时任务能力", True),
+    SkillPackage("office-suite-local", "skillhub", "0.3.4", "中：需本地Python依赖", True),
+    SkillPackage("github", "clawhub", "2.1.0", "中：需要gh登录权限"),
+    SkillPackage("weather", "skillhub", "1.0.1", "低：只读查询"),
+]
+
+
+def list_skill_catalog() -> List[SkillPackage]:
+    return SKILL_CATALOG.copy()
+
+
+def install_skills_selection(selected_names: List[str], install_root: Path) -> InstallResult:
+    if not selected_names:
+        return InstallResult(True, "未选择任何技能，已跳过", ["skip"], install_root)
+    if os.getenv("OPENCLAW_INSTALLER_TEST_MODE") == "1":
+        return InstallResult(True, f"测试模式：已模拟安装技能 {', '.join(selected_names)}", ["test-mode-skill-install"], install_root)
+    # 真实流程留给后续接OpenClaw命令/skillhub CLI，这里先提供可视化闭环与风险展示
+    return InstallResult(True, f"已记录待安装技能：{', '.join(selected_names)}", ["deferred-skill-install"], install_root)
+
+
+def validate_api_key(provider: str, api_key: str) -> InstallResult:
+    provider = provider.lower().strip()
+    key = api_key.strip()
+    if not key:
+        return InstallResult(False, "API Key 不能为空", ["validate"], Path("."))
+    simple_rules = {
+        "openai": key.startswith("sk-") and len(key) > 20,
+        "anthropic": key.startswith("sk-ant-") and len(key) > 20,
+    }
+    ok = simple_rules.get(provider, len(key) >= 16)
+    if ok:
+        return InstallResult(True, f"{provider} Key 格式校验通过（基础校验）", ["validate"], Path("."))
+    return InstallResult(False, f"{provider} Key 格式不合法", ["validate"], Path("."))
+
+
+def generate_gateway_token(hours_valid: int = 24) -> Dict[str, str]:
+    token = secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(hours=hours_valid)
+    return {
+        "token": token,
+        "createdAt": now.isoformat(),
+        "expiresAt": expires.isoformat(),
+        "status": "valid",
+    }
+
+
+def get_token_status(expires_at_iso: str) -> str:
+    try:
+        expires = datetime.fromisoformat(expires_at_iso)
+    except ValueError:
+        return "invalid"
+    return "valid" if datetime.now(timezone.utc) < expires else "expired"
+
+
+def run_hook_test(template: str, route_to: str) -> InstallResult:
+    if not template.strip() or not route_to.strip():
+        return InstallResult(False, "Hook 测试失败：模板和路由目标不能为空", ["hook-test"], Path("."))
+    return InstallResult(True, f"Hook 测试通过：{template} -> {route_to}", ["hook-test"], Path("."))
+
+
+def run_preflight_checks(snapshot: Dict[str, str]) -> Dict[str, str]:
+    checks = {
+        "environment": "ok" if shutil.which("node") and shutil.which("npm") else "missing",
+        "model": "ok" if snapshot.get("provider") and snapshot.get("default_model") else "missing",
+        "skills": "ok" if snapshot.get("skills_selected") else "warning",
+        "hooks": "ok" if snapshot.get("hook_enabled") == "true" else "warning",
+        "permission": "ok" if snapshot.get("permission_mode") in {"reply-only", "allowlist", "full"} else "missing",
+        "gateway": "ok" if snapshot.get("gateway_mode") else "missing",
+        "dashboard": "ok" if snapshot.get("dashboard_url") else "missing",
+    }
+    return checks

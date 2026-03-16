@@ -38,7 +38,43 @@ def test_bin_hint_path(tmp_path: Path):
 
 def test_apply_config_in_test_mode(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENCLAW_INSTALLER_TEST_MODE", "1")
-    # prepare fake executable in test mode
     app.install_openclaw(tmp_path)
     r = app.apply_config_values(tmp_path, {"models.default": "x"})
     assert r.ok
+
+
+def test_skill_catalog_and_install(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENCLAW_INSTALLER_TEST_MODE", "1")
+    items = app.list_skill_catalog()
+    assert len(items) >= 1
+    res = app.install_skills_selection([items[0].name], tmp_path)
+    assert res.ok
+
+
+def test_validate_api_key_basic():
+    ok = app.validate_api_key("openai", "sk-abcdefghijklmnopqrstuvwxyz")
+    bad = app.validate_api_key("openai", "abc")
+    assert ok.ok is True
+    assert bad.ok is False
+
+
+def test_gateway_token_status():
+    token = app.generate_gateway_token(1)
+    assert token["status"] == "valid"
+    assert app.get_token_status(token["expiresAt"]) == "valid"
+
+
+def test_preflight_checks():
+    checks = app.run_preflight_checks(
+        {
+            "provider": "openai",
+            "default_model": "gpt-5.3-codex",
+            "skills_selected": "qqbot-cron",
+            "hook_enabled": "true",
+            "permission_mode": "allowlist",
+            "gateway_mode": "local",
+            "dashboard_url": "http://127.0.0.1:18789/dashboard",
+        }
+    )
+    assert checks["model"] == "ok"
+    assert checks["permission"] == "ok"
