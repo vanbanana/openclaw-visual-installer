@@ -92,7 +92,7 @@ class InstallerApp:
 
         pages = {}
         for title in [
-            "1 安装", "2 运行模式", "3 模型/API", "4 Skills", "5 Hooks", "6 权限", "7 Gateway", "8 完整检查", "日志"
+            "1 安装", "2 运行模式", "3 模型/API", "4 Skills", "5 Hooks", "6 权限", "7 Gateway", "8 完整检查", "9 官方11项对照", "日志"
         ]:
             frame = ttk.Frame(notebook, padding=12)
             notebook.add(frame, text=title)
@@ -106,6 +106,7 @@ class InstallerApp:
         self._build_permission_page(pages["6 权限"])
         self._build_gateway_page(pages["7 Gateway"])
         self._build_check_page(pages["8 完整检查"])
+        self._build_parity_page(pages["9 官方11项对照"])
         self._build_logs_page(pages["日志"])
 
         ttk.Label(outer, textvariable=self.status_var, foreground="#0f4c81").pack(anchor="w", pady=(8, 0))
@@ -179,6 +180,12 @@ class InstallerApp:
         ttk.Button(parent, text="执行首次对话前完整检查", command=self.run_full_check).pack(anchor="w", pady=4)
         self.check_text = tk.Text(parent, height=18)
         self.check_text.pack(fill=tk.BOTH, expand=True)
+
+    def _build_parity_page(self, parent: ttk.Frame) -> None:
+        ttk.Label(parent, text="官方流程 11 项对照（缺一项不算完成）", style="Sub.TLabel").pack(anchor="w", pady=(0, 6))
+        ttk.Button(parent, text="刷新官方11项对照", command=self.run_official_parity_check).pack(anchor="w", pady=4)
+        self.parity_text = tk.Text(parent, height=18)
+        self.parity_text.pack(fill=tk.BOTH, expand=True)
 
     def _build_logs_page(self, parent: ttk.Frame) -> None:
         self.log_text = tk.Text(parent, bg="#0b1020", fg="#d1e7ff", insertbackground="white")
@@ -316,6 +323,35 @@ class InstallerApp:
             return
         webbrowser.open(url)
         self.log(f"已打开 Dashboard: {url}")
+
+    def run_official_parity_check(self) -> None:
+        selected_skills = [n for n, v in self.skill_vars.items() if v.get()]
+        provider = self.provider_var.get().strip().lower()
+
+        # 以官方 onboard/configure 为基准的 11 项
+        parity = {
+            "1 Existing config Keep/Modify/Reset": "⚠️ 待实现（当前仅安装目录选择）",
+            "2 QuickStart vs Advanced": "⚠️ 待实现（当前单一路径）",
+            "3 运行模式/Gateway": "✅" if self.gateway_mode_var.get() and self.bind_mode_var.get() and self.auth_mode_var.get() else "❌",
+            "4 模型认证全量分支": "⚠️ 部分（仅 API key 基础校验）" if provider in {"openai", "anthropic", "other"} else "❌",
+            "5 Skills eligible/check + npm/pnpm": "⚠️ 部分（当前静态清单）" if selected_skills else "❌",
+            "6 Hooks 可视化": "✅" if self.hook_route_var.get().strip() else "❌",
+            "7 权限模式 + 二次确认": "✅" if self.permission_mode_var.get() in {"reply-only", "allowlist", "full"} else "❌",
+            "8 Channels 完整向导": "⚠️ 待实现",
+            "9 Daemon/runtime + health": "⚠️ 待实现",
+            "10 Web search provider 配置": "⚠️ 待实现",
+            "11 完整检查与验收": "✅" if self.dashboard_url_var.get().strip() else "❌",
+        }
+
+        self.parity_text.delete("1.0", tk.END)
+        done = 0
+        for k, v in parity.items():
+            self.parity_text.insert(tk.END, f"{k}: {v}\n")
+            if str(v).startswith("✅"):
+                done += 1
+
+        self.status_var.set(f"官方11项对照：{done}/11 已达标")
+        self.log(f"官方11项对照刷新：{done}/11")
 
     def run_full_check(self) -> None:
         snapshot = {
