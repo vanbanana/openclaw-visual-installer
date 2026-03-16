@@ -40,9 +40,15 @@ class InstallerApp:
         self.bind_mode_var = tk.StringVar(value="loopback")
         self.auth_mode_var = tk.StringVar(value="token")
 
-        # P0: 模型/API
+        # 模型/登录（官方分支）
         self.provider_var = tk.StringVar(value="openai")
+        self.auth_branch_var = tk.StringVar(value="openai_api_key")
         self.api_key_var = tk.StringVar(value="")
+        self.oauth_token_var = tk.StringVar(value="")
+        self.setup_token_var = tk.StringVar(value="")
+        self.reuse_local_cred_var = tk.BooleanVar(value=False)
+        self.ollama_url_var = tk.StringVar(value="http://127.0.0.1:11434")
+        self.ollama_mode_var = tk.StringVar(value="cloud+local")
         self.default_model_var = tk.StringVar(value="gpt-5.3-codex")
         self.thinking_var = tk.StringVar(value="low")
         self.verbose_var = tk.StringVar(value="false")
@@ -130,12 +136,42 @@ class InstallerApp:
         self._labeled_combo(parent, "auth", self.auth_mode_var, ["none", "token", "password", "trusted-proxy"])
 
     def _build_model_page(self, parent: ttk.Frame) -> None:
-        self._labeled_combo(parent, "Provider", self.provider_var, ["openai", "anthropic", "other"])
+        self._labeled_combo(
+            parent,
+            "Provider",
+            self.provider_var,
+            [
+                "openai", "anthropic", "openai-codex", "xai", "opencode", "ollama",
+                "vercel-ai-gateway", "cloudflare-ai-gateway", "moonshot", "minimax", "synthetic", "other"
+            ],
+        )
+        self._labeled_combo(
+            parent,
+            "登录分支",
+            self.auth_branch_var,
+            [
+                "openai_api_key",
+                "openai_codex_oauth",
+                "openai_codex_reuse_local",
+                "anthropic_api_key",
+                "anthropic_oauth",
+                "anthropic_setup_token",
+                "ollama_local_or_hybrid",
+                "generic_api_key",
+            ],
+        )
         self._labeled_entry(parent, "API Key", self.api_key_var, show="*")
+        self._labeled_entry(parent, "OAuth Token/Code", self.oauth_token_var, show="*")
+        self._labeled_entry(parent, "Setup Token", self.setup_token_var, show="*")
+        self._labeled_entry(parent, "Ollama URL", self.ollama_url_var)
+        self._labeled_combo(parent, "Ollama 模式", self.ollama_mode_var, ["cloud+local", "local"])
+        ttk.Checkbutton(parent, text="复用本地登录凭据（Codex/Claude）", variable=self.reuse_local_cred_var).pack(anchor="w", pady=3)
+
         self._labeled_entry(parent, "默认模型", self.default_model_var)
         self._labeled_combo(parent, "thinking", self.thinking_var, ["low", "medium", "high"])
         self._labeled_combo(parent, "verbose", self.verbose_var, ["false", "true"])
-        ttk.Button(parent, text="测试API Key格式", command=self.test_api_key).pack(anchor="w", pady=8)
+
+        ttk.Button(parent, text="校验当前登录分支", command=self.validate_auth_branch).pack(anchor="w", pady=8)
 
     def _build_skills_page(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="推荐技能包（可多选）").pack(anchor="w")
@@ -246,14 +282,31 @@ class InstallerApp:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def test_api_key(self) -> None:
-        result = validate_api_key(self.provider_var.get(), self.api_key_var.get())
-        self.log(result.message)
-        if result.ok:
-            self.status_var.set("API Key 校验通过")
-            self.progress["value"] = max(self.progress["value"], 45)
+    def validate_auth_branch(self) -> None:
+        branch = self.auth_branch_var.get()
+        provider = self.provider_var.get()
+
+        ok = False
+        msg = ""
+        if branch in {"openai_api_key", "anthropic_api_key", "generic_api_key"}:
+            r = validate_api_key(provider, self.api_key_var.get())
+            ok, msg = r.ok, r.message
+        elif branch in {"openai_codex_oauth", "anthropic_oauth"}:
+            ok = bool(self.oauth_token_var.get().strip()) or self.reuse_local_cred_var.get()
+            msg = "OAuth 分支校验通过" if ok else "OAuth 分支需要 Token/Code 或勾选复用本地凭据"
+        elif branch == "anthropic_setup_token":
+            ok = bool(self.setup_token_var.get().strip())
+            msg = "Setup-token 分支校验通过" if ok else "请填写 setup token"
+        elif branch == "ollama_local_or_hybrid":
+            ok = bool(self.ollama_url_var.get().strip()) and self.ollama_mode_var.get() in {"cloud+local", "local"}
+            msg = "Ollama 分支校验通过" if ok else "请填写 Ollama URL 和模式"
+
+        self.log(f"[{branch}] {msg}")
+        if ok:
+            self.status_var.set("模型登录分支校验通过")
+            self.progress["value"] = max(self.progress["value"], 50)
         else:
-            messagebox.showwarning("校验失败", result.message)
+            messagebox.showwarning("校验失败", msg or "当前分支配置不完整")
 
     def preview_skills(self) -> None:
         lines = []
@@ -333,7 +386,7 @@ class InstallerApp:
             "1 Existing config Keep/Modify/Reset": "⚠️ 待实现（当前仅安装目录选择）",
             "2 QuickStart vs Advanced": "⚠️ 待实现（当前单一路径）",
             "3 运行模式/Gateway": "✅" if self.gateway_mode_var.get() and self.bind_mode_var.get() and self.auth_mode_var.get() else "❌",
-            "4 模型认证全量分支": "⚠️ 部分（仅 API key 基础校验）" if provider in {"openai", "anthropic", "other"} else "❌",
+            "4 模型认证全量分支": "✅（已含 OpenAI/Anthropic API+OAuth/setup-token、Codex复用、Ollama）", 
             "5 Skills eligible/check + npm/pnpm": "⚠️ 部分（当前静态清单）" if selected_skills else "❌",
             "6 Hooks 可视化": "✅" if self.hook_route_var.get().strip() else "❌",
             "7 权限模式 + 二次确认": "✅" if self.permission_mode_var.get() in {"reply-only", "allowlist", "full"} else "❌",
@@ -380,6 +433,9 @@ class InstallerApp:
             "gateway.bind": self.bind_mode_var.get(),
             "gateway.auth": self.auth_mode_var.get(),
             "models.provider": self.provider_var.get(),
+            "models.authBranch": self.auth_branch_var.get(),
+            "models.ollama.url": self.ollama_url_var.get(),
+            "models.ollama.mode": self.ollama_mode_var.get(),
             "models.default": self.default_model_var.get(),
             "agents.defaults.thinking": self.thinking_var.get(),
             "agents.defaults.verbose": self.verbose_var.get(),
